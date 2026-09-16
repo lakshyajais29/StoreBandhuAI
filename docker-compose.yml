@@ -1,0 +1,66 @@
+# Local stack: MongoDB replica set (transactions need it), Redis, mock Laravel, API, worker.
+#   docker compose up -d --build
+#   open http://localhost:8000/demo   (after building the widget: cd widget && npm i && npm run build)
+services:
+  mongo:
+    image: mongo:8.0
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports: ["27017:27017"]
+    volumes: [mongo-data:/data/db]
+    healthcheck:
+      # Initialises the single-node replica set on first run, then reports health.
+      test: ["CMD", "mongosh", "--quiet", "--eval", "try { rs.status().ok } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}).ok }"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 5s
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports: ["6379:6379"]
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 20
+
+  mock-laravel:
+    build: .
+    command: ["node", "mock-laravel/server.js"]
+    env_file: .env
+    ports: ["8000:8000"]
+    volumes: ["./widget:/app/widget:ro"]
+
+  api:
+    build: .
+    command: ["node", "src/server.js"]
+    env_file: .env
+    environment:
+      MONGO_URI: mongodb://mongo:27017/bandhuai?replicaSet=rs0
+      REDIS_URL: redis://redis:6379
+      LARAVEL_API_BASE_URL: http://mock-laravel:8000
+    ports: ["4000:4000"]
+    volumes: [files:/app/data/files]
+    depends_on:
+      mongo: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      mock-laravel: { condition: service_started }
+
+  worker:
+    build: .
+    command: ["node", "src/worker.js"]
+    env_file: .env
+    environment:
+      MONGO_URI: mongodb://mongo:27017/bandhuai?replicaSet=rs0
+      REDIS_URL: redis://redis:6379
+      LARAVEL_API_BASE_URL: http://mock-laravel:8000
+    volumes: [files:/app/data/files]
+    depends_on:
+      mongo: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+volumes:
+  mongo-data:
+  redis-data:
+  files:

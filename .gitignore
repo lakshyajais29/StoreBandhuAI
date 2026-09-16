@@ -1,0 +1,9 @@
+node_modules/
+widget/node_modules/
+widget/dist/
+data/
+.env
+coverage/
+evals/report*.json
+*.log
+CLAUDE.md
