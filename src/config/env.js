@@ -24,6 +24,9 @@ const schema = z
     LARAVEL_API_BASE_URL: z.string().url(),
     LARAVEL_AGENT_SERVICE_TOKEN: z.string().min(1),
     LARAVEL_TIMEOUT_MS: int(8000),
+    // 'mock' = mock-laravel/server.js contract (flat bodies, price_paise, quote_id flow) — local dev/tests default.
+    // 'real' = storebandhu's actual Laravel API ({success,data,meta} envelope, rupee floats, stateless quote). See docs/03-LARAVEL-API-CONTRACT.md.
+    LARAVEL_API_DIALECT: z.enum(['mock', 'real']).default('mock'),
 
     LLM_PROVIDER: z.enum(['glm', 'fake']).default('glm'),
     GLM_API_KEY: z.string().optional(),

@@ -21,8 +21,10 @@ async function verifySessionToken(token) {
   const e = env();
   const { key, algorithms } = await verificationKey();
   const { payload } = await jwtVerify(token, key, { issuer: e.SESSION_JWT_ISSUER, audience: e.SESSION_JWT_AUDIENCE, algorithms, clockTolerance: 30 });
-  if (payload.mid === undefined || payload.mid === null || payload.sub === undefined) throw new Error('missing claims');
-  return { userId: String(payload.sub), merchantId: String(payload.mid), scopes: Array.isArray(payload.scopes) ? payload.scopes : [], tokenId: payload.jti };
+  // Our own session minter emits `mid`; storebandhu's real Laravel emits `merchant_id`. Accept either — never trust anything else as merchant identity.
+  const merchantId = payload.mid ?? payload.merchant_id;
+  if (merchantId === undefined || merchantId === null || payload.sub === undefined) throw new Error('missing claims');
+  return { userId: String(payload.sub), merchantId: String(merchantId), scopes: Array.isArray(payload.scopes) ? payload.scopes : [], tokenId: payload.jti };
 }
 
 async function requireMerchant(req, _res, next) {
