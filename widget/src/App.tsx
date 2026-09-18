@@ -1,110 +1,147 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createApi, ApiError } from './api';
-import type { ChatMessage, MountOptions, UiCard, Wallet } from './types';
-import { ActionCard } from './components/ActionCard';
-import { JobCard } from './components/JobCard';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { createApi } from './api';
+import type { ConversationSummary, MountOptions, ThemeChoice, Wallet } from './types';
+import { loadTheme, resolveTheme, saveTheme, watchSystemTheme } from './theme';
+import { useConversations } from './state/useConversations';
+import { useThread } from './state/useThread';
+import { useFocusTrap } from './lib/useFocusTrap';
+import { Sidebar } from './components/shell/Sidebar';
+import { Header } from './components/shell/Header';
+import { Thread } from './components/thread/Thread';
 import { Composer } from './components/Composer';
-import { TopUp } from './components/TopUp';
+import { AccountPanel } from './components/account/AccountPanel';
+import { Icon } from './components/ui/Icon';
 
-const STARTERS = ['Aaj kitna becha?', 'Stock of blue shirt', 'Mere tokens kitne hain?'];
-const cardsOf = (m: ChatMessage): UiCard[] => (Array.isArray(m.ui) ? m.ui : m.ui ? [m.ui] : []);
+const STARTERS = ['Aaj kitna becha?', 'Stock of blue shirt', 'Blue shirt ka white background photo', 'Mere tokens kitne hain?'];
 
 export function App({ opts }: { opts: MountOptions }) {
   const api = useMemo(() => createApi(opts.apiBaseUrl, opts.getToken), [opts.apiBaseUrl, opts.getToken]);
-  const [open, setOpen] = useState(!!opts.startOpen);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [conversationId, setConversationId] = useState<string | undefined>(() => sessionStorage.getItem('bandhu.conversation') || undefined);
+  const workspace = opts.mode === 'workspace';
+
+  const [open, setOpen] = useState(workspace || !!opts.startOpen);
+  const [theme, setTheme] = useState<ThemeChoice>(loadTheme);
+  const [drawer, setDrawer] = useState(false);
+  const [account, setAccount] = useState(false);
   const [wallet, setWallet] = useState<Wallet | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [sheet, setSheet] = useState(false);
-  const endRef = useRef<HTMLDivElement>(null);
+  const drawerRef = useFocusTrap<HTMLDivElement>(drawer, () => setDrawer(false));
 
-  const refresh = useCallback(async () => {
-    if (!conversationId) return;
-    try {
-      const c = await api.conversation(conversationId);
-      setMessages(c.messages);
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 404) { sessionStorage.removeItem('bandhu.conversation'); setConversationId(undefined); }
-    }
-    api.wallet().then(setWallet).catch(() => {});
-  }, [api, conversationId]);
+  const mode = resolveTheme(theme);
+  useEffect(() => watchSystemTheme(() => theme === 'system' && setTheme('system')), [theme]);
+  const applyTheme = (t: ThemeChoice) => { setTheme(t); saveTheme(t); };
 
-  useEffect(() => { if (open) { refresh(); api.wallet().then(setWallet).catch(() => {}); } }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { endRef.current?.scrollIntoView({ block: 'end' }); }, [messages.length, busy]);
+  // Escape minimises the floating panel when nothing else is capturing it (workspace mode has no minimise).
+  useEffect(() => {
+    if (!open || workspace || drawer || account) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, workspace, drawer, account]);
 
-  const send = async (text: string, files: File[]) => {
-    setBusy(true); setError(null);
-    const temp: ChatMessage = { id: `tmp-${Date.now()}`, role: 'user', content: text, ui: null, attachments: [], createdAt: new Date().toISOString(), localPreview: files.map((f) => URL.createObjectURL(f)) };
-    setMessages((m) => [...m, temp]);
-    try {
-      const assetIds = await Promise.all(files.map((f) => api.upload(f)));
-      const r = await api.chat(text, conversationId, assetIds);
-      setConversationId(r.conversationId);
-      sessionStorage.setItem('bandhu.conversation', r.conversationId);
-      setMessages((m) => [...m.filter((x) => x.id !== temp.id), ...r.messages.map((x) => (x.role === 'user' ? { ...x, localPreview: temp.localPreview } : x))]);
-      setWallet(r.wallet);
-    } catch (e: any) {
-      setMessages((m) => m.filter((x) => x.id !== temp.id));
-      setError(e.code === 'RATE_LIMITED' ? 'You are sending messages too quickly. Wait a moment and try again.' : e.message || 'Could not reach Bandhu.');
-    } finally {
-      setBusy(false);
-    }
+  const list = useConversations(api);
+
+  const onConversationTouched = useCallback((c: ConversationSummary) => {
+    if (list.view === 'active') list.upsert(c);
+    // Reconcile the provisional title (and ordering) against the server.
+    setTimeout(() => list.reload(), 400);
+  }, [list]);
+
+  const thread = useThread(api, { onWallet: setWallet, onConversationTouched });
+
+  const loadWallet = useCallback(() => { api.wallet().then(setWallet).catch(() => {}); }, [api]);
+  useEffect(() => { if (open) loadWallet(); }, [open, loadWallet]);
+
+  const newChat = () => { thread.reset(); setDrawer(false); };
+  const openConversation = (id: string) => { thread.open(id); setDrawer(false); };
+
+  const rename = async (id: string, title: string) => {
+    await list.rename(id, title);
+    if (id === thread.activeId) thread.setTitle(title);
   };
 
-  const decide = (kind: 'confirm' | 'cancel') => async (id: string) => {
-    const r = await (kind === 'confirm' ? api.confirm(id) : api.cancel(id));
-    setWallet(r.wallet);
-    await refresh();
+  const setStatus = async (id: string, status: 'active' | 'archived') => {
+    await list.setStatus(id, status);
+    if (id !== thread.activeId) return;
+    if (status === 'archived') thread.reset(); else thread.markRestored();
   };
 
-  return (
-    <div className="bandhu-root">
-      {open && (
-        <section className="panel" role="dialog" aria-label="Bandhu AI assistant">
-          <header className="panel-head">
-            <div className="brand"><span className="brand-mark" aria-hidden="true">ब</span><span>Bandhu</span></div>
-            <button type="button" className={`tokens ${wallet && wallet.available < 10 ? 'tokens--low' : ''}`} onClick={() => setSheet(true)} aria-label="Tokens and top up">
-              {wallet ? `${wallet.available} tokens` : '…'}
-            </button>
-            <button type="button" className="close" aria-label="Close assistant" onClick={() => setOpen(false)}>×</button>
-          </header>
+  const restoreActive = async () => {
+    if (!thread.activeId) return;
+    await list.setStatus(thread.activeId, 'active');
+    thread.markRestored();
+    list.reload();
+  };
 
-          <div className="thread" aria-live="polite">
-            {messages.length === 0 && !busy && (
-              <div className="empty">
-                <p>Tell me what to do in your store — check sales, update stock, create listings or make product photos.</p>
-                <div className="starters">{STARTERS.map((s) => <button type="button" key={s} onClick={() => send(s, [])}>{s}</button>)}</div>
-              </div>
-            )}
-            {messages.map((m) => (
-              <div key={m.id} className={`msg msg--${m.role}`}>
-                {m.localPreview?.length ? <div className="thumbs">{m.localPreview.map((u) => <img key={u} src={u} alt="Attached" />)}</div> : null}
-                {m.content && <p className="bubble">{m.role === 'system_event' ? m.content.replace(/\s*\[action .*\]$/, '') : m.content}</p>}
-                {cardsOf(m).map((c, i) => {
-                  if (c.type === 'pending_action' || c.type === 'action_result') return <ActionCard key={i} action={c.action} onConfirm={decide('confirm')} onCancel={decide('cancel')} />;
-                  if (c.type === 'job') return <JobCard key={c.job.id + c.job.status} job={c.job} api={api} onSettled={refresh} />;
-                  if (c.type === 'insufficient_tokens') return <button type="button" key={i} className="inline-cta" onClick={() => setSheet(true)}>Add tokens{c.required ? ` (needs ${c.required})` : ''}</button>;
-                  if (c.type === 'upgrade_required') return <p key={i} className="note">Your plan doesn't include {c.feature}. Upgrade from Billing in your dashboard.</p>;
-                  return null;
-                })}
-              </div>
-            ))}
-            {busy && <div className="msg msg--assistant"><p className="bubble typing">Working on it…</p></div>}
-            {error && <p className="warn" role="alert">{error}</p>}
-            <div ref={endRef} />
-          </div>
+  const archived = thread.meta?.status === 'archived';
+  const title = thread.meta?.title || (thread.activeId ? 'Loading…' : 'New chat');
 
-          <Composer disabled={busy} onSend={send} />
-          {sheet && <TopUp api={api} onClose={() => setSheet(false)} onWallet={setWallet} />}
-        </section>
-      )}
-      {!open && (
+  const sidebar = (
+    <Sidebar
+      conversations={list.items} activeId={thread.activeId} view={list.view}
+      loading={list.loading} loadingMore={list.loadingMore} error={list.error} hasMore={list.hasMore}
+      wallet={wallet} theme={theme}
+      onView={list.setView} onReload={list.reload} onLoadMore={list.loadMore}
+      onNew={newChat} onOpen={openConversation} onRename={rename} onSetStatus={setStatus}
+      onTheme={applyTheme} onAccount={() => { setAccount(true); setDrawer(false); }}
+      onCloseDrawer={workspace ? undefined : () => setDrawer(false)}
+    />
+  );
+
+  if (!open) {
+    return (
+      <div className="bandhu-root bandhu-root--panel" data-theme={mode}>
         <button type="button" className="launcher" onClick={() => setOpen(true)} aria-label="Open Bandhu AI">
           <span className="brand-mark" aria-hidden="true">ब</span> Ask Bandhu
         </button>
-      )}
+      </div>
+    );
+  }
+
+  return (
+    <div className={`bandhu-root ${workspace ? 'bandhu-root--workspace' : 'bandhu-root--panel'}`} data-theme={mode}>
+      <section className="shell" role={workspace ? undefined : 'dialog'} aria-label="Bandhu AI assistant">
+        <aside className="shell-side">{sidebar}</aside>
+
+        {drawer && (
+          <div className="drawer">
+            <button type="button" className="drawer-scrim" aria-label="Close menu" onClick={() => setDrawer(false)} />
+            <div className="drawer-panel" ref={drawerRef} tabIndex={-1}>{sidebar}</div>
+          </div>
+        )}
+
+        <main className="shell-main">
+          <Header
+            title={title} archived={archived} wallet={wallet} showMenu
+            onMenu={() => setDrawer(true)} onAccount={() => setAccount(true)}
+            onClose={workspace ? undefined : () => setOpen(false)}
+          />
+          <Thread
+            messages={thread.messages} assets={thread.assets} api={api}
+            busy={thread.busy} loading={thread.loading}
+            loadError={thread.loadError} sendError={thread.sendError}
+            archived={archived} starters={STARTERS} storeName="your store"
+            onRetryLoad={thread.retry} onRestore={restoreActive}
+            onStarter={(s) => thread.send(s, [])}
+            onConfirm={thread.confirm} onCancel={thread.cancel}
+            onJobSettled={() => { thread.refresh(); loadWallet(); }}
+            onTopUp={() => setAccount(true)}
+          />
+          <Composer
+            disabled={thread.busy || thread.loading || archived}
+            lockedReason={archived ? 'Restore this chat to keep talking.' : undefined}
+            onSend={thread.send}
+          />
+        </main>
+
+        {!workspace && (
+          <button type="button" className="shell-min" onClick={() => setOpen(false)} aria-label="Minimise assistant">
+            <Icon name="chevron" size={16} />
+          </button>
+        )}
+
+        {account && (
+          <AccountPanel api={api} wallet={wallet} theme={theme} onTheme={applyTheme} onWallet={setWallet} onClose={() => setAccount(false)} />
+        )}
+      </section>
     </div>
   );
 }

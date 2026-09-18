@@ -21,7 +21,7 @@ function toOpenAIMessages(messages) {
 }
 
 function createGlmProvider({ apiKey, baseURL, model, temperature = 0.1, timeoutMs = 20000, client }) {
-  const openai = client || new OpenAI({ apiKey, baseURL, timeout: timeoutMs, maxRetries: 1 });
+  const openai = client || new OpenAI({ apiKey, baseURL, timeout: timeoutMs, maxRetries: 3 });
 
   return {
     name: 'glm',

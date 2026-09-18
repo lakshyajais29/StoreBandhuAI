@@ -5,30 +5,62 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>storebandhu dashboard — Bandhu AI demo</title>
   <style>
-    body { margin: 0; font-family: system-ui, sans-serif; background: #EEF0F5; color: #1E2248; }
-    header { background: #fff; border-bottom: 1px solid #D9DCE7; padding: 14px 24px; font-weight: 700; }
-    main { padding: 24px; max-width: 760px; }
+    :root { color-scheme: light dark; }
+    html, body { height: 100%; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: #EEF0F5; color: #1E2248; display: flex; flex-direction: column; }
+    header { background: #fff; border-bottom: 1px solid #D9DCE7; padding: 14px 24px; font-weight: 700;
+             display: flex; justify-content: space-between; align-items: center; }
+    nav button { font: inherit; padding: 6px 12px; border: 1px solid #D9DCE7; background: #fff; border-radius: 8px; cursor: pointer; }
+    nav button[aria-pressed="true"] { background: #1E2248; color: #fff; border-color: #1E2248; }
+    main { flex: 1; min-height: 0; padding: 24px; max-width: 760px; }
+    #workspace { flex: 1; min-height: 0; display: none; }
+    body.is-workspace main { display: none; }
+    body.is-workspace #workspace { display: block; }
     code { background: #fff; padding: 1px 5px; border-radius: 4px; }
   </style>
 </head>
 <body>
-  <header>storebandhu · Demo Fashion Store</header>
+  <header>
+    <span>storebandhu · Demo Fashion Store</span>
+    <nav>
+      <button id="btn-panel" aria-pressed="true">Dashboard + panel</button>
+      <button id="btn-workspace" aria-pressed="false">Full workspace</button>
+    </nav>
+  </header>
   <main>
     <h1>Dashboard (mock)</h1>
     <p>This page stands in for the Laravel merchant dashboard. The assistant is in the bottom-right corner.</p>
     <p>Try: <code>aaj kitna becha</code>, <code>stock of blue shirt</code>, <code>create listing</code>, or attach a photo and say <code>white background image</code>.</p>
   </main>
+  <div id="workspace"></div>
+
   <script src="./dist/bandhu-widget.js"></script>
   <script>
     // In production Laravel renders this with the logged-in merchant; the mock endpoint mints a dev token.
-    BandhuAI.mount({
-      apiBaseUrl: 'http://localhost:4000',
-      startOpen: true,
-      getToken: async () => {
-        const r = await fetch('/api/v1/agent/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ merchant_id: 'm_demo', user_id: 'u_demo' }) });
-        return (await r.json()).token;
-      },
-    });
+    const getToken = async () => {
+      const r = await fetch('/api/v1/agent/session', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ merchant_id: 'm_demo', user_id: 'u_demo' }),
+      });
+      return (await r.json()).token;
+    };
+
+    function show(mode) {
+      document.body.classList.toggle('is-workspace', mode === 'workspace');
+      document.getElementById('btn-panel').setAttribute('aria-pressed', String(mode === 'panel'));
+      document.getElementById('btn-workspace').setAttribute('aria-pressed', String(mode === 'workspace'));
+      BandhuAI.mount({
+        apiBaseUrl: 'http://localhost:4000',
+        mode,
+        startOpen: true,
+        getToken,
+        target: mode === 'workspace' ? document.getElementById('workspace') : undefined,
+      });
+    }
+
+    document.getElementById('btn-panel').onclick = () => show('panel');
+    document.getElementById('btn-workspace').onclick = () => show('workspace');
+    show('panel');
   </script>
 </body>
 </html>

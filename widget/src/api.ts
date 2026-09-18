@@ -1,4 +1,6 @@
-import type { ChatResponse, Wallet, ActionView, JobView, ChatMessage } from './types';
+import type {
+  ChatResponse, Wallet, ActionView, JobView, ConversationSummary, ConversationDetail, LedgerEntry,
+} from './types';
 
 export class ApiError extends Error {
   constructor(public status: number, public code: string, message: string, public details?: any) { super(message); }
@@ -29,15 +31,37 @@ export function createApi(baseUrl: string, getToken: () => Promise<string>) {
   return {
     chat: (message: string, conversationId?: string, assetIds?: string[]) =>
       request<ChatResponse>('POST', '/api/chat', { message, conversationId, assetIds }),
-    conversation: (id: string) => request<{ id: string; messages: ChatMessage[] }>('GET', `/api/conversations/${id}`),
+
+    conversations: (opts: { status?: 'active' | 'archived'; before?: string; limit?: number } = {}) => {
+      const q = new URLSearchParams();
+      if (opts.status) q.set('status', opts.status);
+      if (opts.before) q.set('before', opts.before);
+      if (opts.limit) q.set('limit', String(opts.limit));
+      const s = q.toString();
+      return request<{ data: ConversationSummary[]; nextCursor: string | null }>('GET', `/api/conversations${s ? `?${s}` : ''}`);
+    },
+    conversation: (id: string) => request<ConversationDetail>('GET', `/api/conversations/${id}`),
+    renameConversation: (id: string, title: string) => request<ConversationSummary>('PATCH', `/api/conversations/${id}`, { title }),
+    setConversationStatus: (id: string, status: 'active' | 'archived') =>
+      request<ConversationSummary>('PATCH', `/api/conversations/${id}`, { status }),
+
     wallet: () => request<Wallet>('GET', '/api/wallet'),
+    ledger: (cursor?: string) =>
+      request<{ data: LedgerEntry[]; nextCursor: string | null }>('GET', `/api/wallet/ledger${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`),
+
+    /** Re-read an action's live state — stored ui cards are snapshots and go stale. */
+    action: (id: string) => request<ActionView>('GET', `/api/actions/${id}`),
     confirm: (id: string) => request<{ action: ActionView; wallet: Wallet }>('POST', `/api/actions/${id}/confirm`),
     cancel: (id: string) => request<{ action: ActionView; wallet: Wallet }>('POST', `/api/actions/${id}/cancel`),
+
     job: (id: string) => request<JobView>('GET', `/api/jobs/${id}`),
+    /** Retries attaching a finished job to the product it already named (input.productId). Never charged again. */
+    attachJob: (id: string, productId?: string) => request<JobView>('POST', `/api/jobs/${id}/attach`, productId ? { productId } : {}),
     usage: () => request<{ totalTokens: number; byAction: { action: string; tokens: number; count: number }[] }>('GET', '/api/wallet/usage'),
     plans: () => request<{ plans: any[]; packs: { code: string; tokens: number; pricePaise: number }[] }>('GET', '/api/billing/plans'),
     checkout: (kind: 'plan' | 'topup', code: string) => request<{ razorpayOrderId: string; keyId: string; amountPaise: number; tokens: number }>('POST', '/api/billing/checkout', { kind, code }),
     verify: (p: Record<string, string>) => request<{ wallet: Wallet }>('POST', '/api/billing/verify', p),
+
     async upload(file: File): Promise<string> {
       const created = await request<{ assetId: string; upload: { method: string; url: string; headers: Record<string, string>; requiresAuth: boolean } }>(
         'POST', '/api/uploads', { mime: file.type, bytes: file.size },
